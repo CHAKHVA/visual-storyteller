@@ -1,5 +1,8 @@
 """Training utilities for image captioning model."""
 
+from pathlib import Path
+from typing import Any, Optional
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -182,6 +185,178 @@ def get_optimizer(
     return optimizer
 
 
+def train_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    grad_clip: float,
+    device: torch.device,
+) -> float:
+    """
+    Train model for one epoch.
+
+    Args:
+        model: Image captioning model.
+        loader: Training data loader.
+        criterion: Loss function.
+        optimizer: Optimizer.
+        grad_clip: Maximum gradient norm for clipping.
+        device: Device to run training on.
+
+    Returns:
+        Average loss for the epoch.
+    """
+    model.train()
+    model.to(device)
+
+    total_loss = 0.0
+    num_batches = len(loader)
+
+    # Create progress bar
+    pbar = tqdm(loader, desc="Training", leave=False)
+
+    for batch_idx, (images, captions, _) in enumerate(pbar):
+        # Perform training step
+        loss = train_step(model, images, captions, criterion, optimizer, grad_clip)
+
+        total_loss += loss
+
+        # Update progress bar with current loss
+        pbar.set_postfix({"loss": f"{loss:.4f}"})
+
+    # Calculate average loss
+    avg_loss = total_loss / num_batches
+
+    return avg_loss
+
+
+def validate_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> float:
+    """
+    Validate model for one epoch.
+
+    Args:
+        model: Image captioning model.
+        loader: Validation data loader.
+        criterion: Loss function.
+        device: Device to run validation on.
+
+    Returns:
+        Average loss for the epoch.
+    """
+    model.eval()
+    model.to(device)
+
+    total_loss = 0.0
+    num_batches = len(loader)
+
+    # Optional progress bar for validation
+    pbar = tqdm(loader, desc="Validation", leave=False)
+
+    for images, captions, _ in pbar:
+        # Perform validation step
+        loss = validate_step(model, images, captions, criterion)
+
+        total_loss += loss
+
+        # Update progress bar
+        pbar.set_postfix({"loss": f"{loss:.4f}"})
+
+    # Calculate average loss
+    avg_loss = total_loss / num_batches
+
+    return avg_loss
+
+
+def save_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    vocab: Any,
+    config: dict,
+    epoch: int,
+    loss: float,
+    filepath_str: str,
+) -> None:
+    """
+    Save model checkpoint.
+
+    Args:
+        model: Image captioning model.
+        optimizer: Optimizer.
+        vocab: Vocabulary object.
+        config: Configuration dictionary.
+        epoch: Current epoch number.
+        loss: Current loss value.
+        filepath: Path where checkpoint should be saved.
+    """
+    filepath = Path(filepath_str)
+
+    # Create parent directory if it doesn't exist
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create checkpoint dictionary
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "vocab": vocab,
+        "config": config,
+        "epoch": epoch,
+        "loss": loss,
+    }
+
+    # Save checkpoint
+    torch.save(checkpoint, filepath)
+    print(f"Checkpoint saved to {filepath}")
+
+
+def load_checkpoint(
+    filepath_str: str,
+    model: nn.Module,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    device: str = "cpu",
+) -> dict:
+    """
+    Load model checkpoint.
+
+    Args:
+        filepath: Path to the checkpoint file.
+        model: Model to load state dict into.
+        optimizer: Optional optimizer to load state dict into.
+        device: Device to map checkpoint to.
+
+    Returns:
+        Full checkpoint dictionary containing vocab, config, epoch, loss, etc.
+
+    Raises:
+        FileNotFoundError: If checkpoint file doesn't exist.
+    """
+    filepath = Path(filepath_str)
+
+    if not filepath.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {filepath}")
+
+    # Load checkpoint
+    checkpoint = torch.load(filepath, map_location=device)
+
+    # Load model state dict
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Optionally load optimizer state dict
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    print(f"Checkpoint loaded from {filepath}")
+    print(f"  Epoch: {checkpoint.get('epoch', 'N/A')}")
+    print(f"  Loss: {checkpoint.get('loss', 'N/A'):.4f}")
+
+    return checkpoint
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("Testing Training Utilities")
@@ -279,6 +454,124 @@ if __name__ == "__main__":
     print(f"Train step with grad_clip=0.001 completed")
     print(f"  Loss: {loss:.4f}")
     print("✓ Gradient clipping works!")
+
+    # Test train_epoch and validate_epoch
+    print("\n" + "=" * 70)
+    print("Testing train_epoch and validate_epoch")
+    print("=" * 70)
+
+    # Create a dummy dataloader
+    from torch.utils.data import TensorDataset
+
+    # Create multiple batches of data
+    num_samples = 16
+    dataset_images = torch.randn(num_samples, 3, 224, 224)
+    dataset_captions = torch.randint(1, vocab_size, (seq_len, num_samples))
+
+    # Create dataset with image, caption pairs
+    # Note: we need to transpose captions for the dataset
+    dataset = TensorDataset(
+        dataset_images,
+        dataset_captions.transpose(0, 1),  # Store as (batch, seq_len)
+    )
+
+    # Custom collate to match our format
+    def dummy_collate(batch):
+        images = torch.stack([item[0] for item in batch])
+        captions = torch.stack([item[1] for item in batch])
+        # Transpose to (seq_len, batch) to match collate_fn
+        captions = captions.transpose(0, 1)
+        image_names = [f"img_{i}.jpg" for i in range(len(batch))]
+        return images, captions, image_names
+
+    dummy_loader = DataLoader(dataset, batch_size=batch_size, collate_fn=dummy_collate)
+
+    device = torch.device("cpu")
+
+    # Test train_epoch
+    avg_train_loss = train_epoch(
+        model, dummy_loader, criterion, optimizer, grad_clip=5.0, device=device
+    )
+    print(f"\nTrain epoch completed")
+    print(f"  Average loss: {avg_train_loss:.4f}")
+    assert isinstance(avg_train_loss, float), "Average loss should be float"
+    print("✓ train_epoch works!")
+
+    # Test validate_epoch
+    avg_val_loss = validate_epoch(model, dummy_loader, criterion, device=device)
+    print(f"\nValidation epoch completed")
+    print(f"  Average loss: {avg_val_loss:.4f}")
+    assert isinstance(avg_val_loss, float), "Average loss should be float"
+    print("✓ validate_epoch works!")
+
+    # Test save_checkpoint and load_checkpoint
+    print("\n" + "=" * 70)
+    print("Testing save_checkpoint and load_checkpoint")
+    print("=" * 70)
+
+    # Create a dummy vocabulary object
+    class DummyVocab:
+        def __init__(self):
+            self.stoi = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2}
+            self.itos = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>"}
+
+    dummy_vocab = DummyVocab()
+
+    # Save checkpoint
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_path = Path(tmpdir) / "test_checkpoint.pt"
+
+        save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            vocab=dummy_vocab,
+            config=dummy_config,
+            epoch=5,
+            loss=avg_train_loss,
+            filepath_str=str(checkpoint_path),
+        )
+
+        assert checkpoint_path.exists(), "Checkpoint file should exist"
+        print("✓ Checkpoint saved successfully!")
+
+        # Create a new model to load into
+        new_model = DummyModel(vocab_size=vocab_size)
+        new_optimizer = get_optimizer(new_model, dummy_config, fine_tune=False)
+
+        # Load checkpoint
+        loaded_checkpoint = load_checkpoint(
+            filepath_str=str(checkpoint_path),
+            model=new_model,
+            optimizer=new_optimizer,
+            device="cpu",
+        )
+
+        print(f"\nCheckpoint loaded successfully!")
+        print(f"  Loaded epoch: {loaded_checkpoint['epoch']}")
+        print(f"  Loaded loss: {loaded_checkpoint['loss']:.4f}")
+        print(f"  Vocab in checkpoint: {type(loaded_checkpoint['vocab']).__name__}")
+
+        # Verify the checkpoint contains expected keys
+        assert "model_state_dict" in loaded_checkpoint
+        assert "optimizer_state_dict" in loaded_checkpoint
+        assert "vocab" in loaded_checkpoint
+        assert "config" in loaded_checkpoint
+        assert loaded_checkpoint["epoch"] == 5
+        assert isinstance(loaded_checkpoint["vocab"], DummyVocab)
+
+        print("✓ Checkpoint loaded successfully with all components!")
+
+        # Test loading without optimizer
+        another_model = DummyModel(vocab_size=vocab_size)
+        loaded_checkpoint_no_opt = load_checkpoint(
+            filepath_str=str(checkpoint_path),
+            model=another_model,
+            optimizer=None,
+            device="cpu",
+        )
+        print("✓ Checkpoint loaded successfully without optimizer!")
 
     print("\n" + "=" * 70)
     print("All tests passed!")
