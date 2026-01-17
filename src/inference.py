@@ -1,8 +1,11 @@
 """Inference utilities for generating captions from images."""
 
+import math
 from pathlib import Path
 from typing import Tuple
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from PIL import Image
 
@@ -332,6 +335,123 @@ def generate_caption_batch(
         captions.append(caption)
 
     return captions
+
+
+def visualize_attention(
+    image_path: str,
+    model: ImageCaptioningModel,
+    vocab: Vocabulary,
+    device: str = "cpu",
+    max_len: int = 50,
+) -> plt.Figure:
+    """
+    Visualize attention weights for each generated word.
+
+    Creates a figure showing the original image and attention heatmaps
+    overlaid on the image for each generated word.
+
+    Args:
+        image_path: Path to the image file.
+        model: Trained image captioning model.
+        vocab: Vocabulary object.
+        device: Device to run inference on.
+        max_len: Maximum caption length.
+
+    Returns:
+        Matplotlib figure with attention visualization.
+    """
+    model.eval()
+
+    # Load and preprocess image
+    transform = get_transforms(train=False)
+    image_tensor = preprocess_image(image_path, transform)
+    image_tensor = image_tensor.to(device)
+
+    # Load original image for visualization
+    original_img = Image.open(image_path).convert("RGB")
+    img_array = np.array(original_img)
+
+    # Get encoder features
+    with torch.no_grad():
+        encoder_out = model.encoder(image_tensor)  # (1, 49, embed_size)
+
+        # Generate caption and capture attention
+        sequence = [vocab.stoi["<SOS>"]]
+        attention_maps = []
+
+        for _ in range(max_len):
+            # Convert sequence to tensor
+            current_seq = torch.tensor([sequence], dtype=torch.long, device=device)
+
+            # Forward pass with attention
+            outputs, attention_weights = model.decoder.forward_with_attention(
+                encoder_out, current_seq
+            )
+
+            # Get prediction for last position
+            last_output = outputs[:, -1, :]
+            predicted_token = last_output.argmax(dim=-1).item()
+
+            # Store attention for the last predicted word
+            # attention_weights shape: (1, seq_len, 49)
+            # We want attention for the last position
+            attn = attention_weights[0, -1, :].cpu().numpy()  # (49,)
+            attention_maps.append(attn)
+
+            # Check for <EOS>
+            if predicted_token == vocab.stoi["<EOS>"]:
+                break
+
+            sequence.append(predicted_token)
+
+    # Get generated words (excluding <SOS>)
+    generated_words = [vocab.itos[idx] for idx in sequence[1:]]
+
+    # Create visualization
+    num_words = len(generated_words)
+    cols = min(5, num_words)
+    rows = math.ceil((num_words + 1) / cols)  # +1 for original image
+
+    fig = plt.figure(figsize=(cols * 3, rows * 3))
+
+    # Plot original image with full caption
+    ax = plt.subplot(rows, cols, 1)
+    ax.imshow(img_array)
+    ax.axis("off")
+    caption = " ".join(generated_words)
+    ax.set_title(f"Generated Caption:\\n{caption}", fontsize=10, weight="bold")
+
+    # Plot attention for each word
+    for idx, (word, attn) in enumerate(zip(generated_words, attention_maps)):
+        ax = plt.subplot(rows, cols, idx + 2)
+
+        # Reshape attention from (49,) to (7, 7)
+        attn_map = attn.reshape(7, 7)
+
+        # Upscale to image size using interpolation
+        from scipy.ndimage import zoom
+
+        img_h, img_w = img_array.shape[:2]
+        scale_h = img_h / 7
+        scale_w = img_w / 7
+        attn_upscaled = zoom(attn_map, (scale_h, scale_w), order=1)
+
+        # Normalize attention for better visualization
+        attn_upscaled = (attn_upscaled - attn_upscaled.min()) / (
+            attn_upscaled.max() - attn_upscaled.min() + 1e-8
+        )
+
+        # Display original image
+        ax.imshow(img_array)
+
+        # Overlay attention heatmap with alpha blending
+        ax.imshow(attn_upscaled, cmap="jet", alpha=0.6, interpolation="bilinear")
+
+        ax.axis("off")
+        ax.set_title(f'"{word}"', fontsize=12, weight="bold")
+
+    plt.tight_layout()
+    return fig
 
 
 if __name__ == "__main__":

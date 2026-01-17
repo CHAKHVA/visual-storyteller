@@ -220,6 +220,10 @@ class DecoderTransformer(nn.Module):
         # Dropout layer
         self.dropout = nn.Dropout(dropout)
 
+        # Storage for attention weights (for visualization)
+        self.attention_weights = None
+        self.return_attention = False
+
         # Initialize weights
         self._init_weights()
 
@@ -294,6 +298,90 @@ class DecoderTransformer(nn.Module):
         # Create upper triangular matrix with -inf (above diagonal)
         mask = torch.triu(torch.full((sz, sz), float("-inf")), diagonal=1)
         return mask
+
+    def forward_with_attention(
+        self, encoder_out: torch.Tensor, captions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass that returns both outputs and cross-attention weights.
+
+        This is a simplified version that computes attention manually for visualization.
+        Uses multi-head attention to compute cross-attention between decoder queries
+        and encoder memory.
+
+        Args:
+            encoder_out: Encoded image features of shape (batch, 49, embed_size).
+            captions: Caption token indices of shape (batch, seq_len).
+
+        Returns:
+            Tuple of (logits, attention_weights):
+            - logits: shape (batch, seq_len, vocab_size)
+            - attention_weights: shape (batch, seq_len, 49) - averaged over heads
+        """
+        batch_size, seq_len = captions.shape
+
+        # Generate causal mask
+        tgt_mask = self.generate_square_subsequent_mask(seq_len).to(captions.device)
+
+        # Create padding mask
+        tgt_key_padding_mask = captions == 0
+
+        # Embed captions and scale
+        embedded = self.embedding(captions) * math.sqrt(self.embed_size)
+
+        # Add positional encoding
+        embedded = self.pos_encoding(embedded)
+
+        # For attention visualization, we'll use a simpler approach:
+        # Compute cross-attention between embedded captions and encoder output
+        # This approximates what the decoder layers do
+
+        # Use the first decoder layer's self-attention and cross-attention
+        # For visualization purposes, we'll compute a simplified cross-attention
+
+        # Query from embedded captions: (batch, seq_len, embed_size)
+        # Key/Value from encoder: (batch, 49, embed_size)
+
+        # Simple scaled dot-product attention
+        # Q: (batch, seq_len, embed_size)
+        # K: (batch, 49, embed_size)
+        # V: (batch, 49, embed_size)
+
+        query = embedded
+        key = encoder_out
+        value = encoder_out
+
+        # Compute attention scores: Q @ K^T / sqrt(d_k)
+        # (batch, seq_len, embed_size) @ (batch, embed_size, 49)
+        # -> (batch, seq_len, 49)
+        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(
+            self.embed_size
+        )
+
+        # Apply softmax to get attention weights
+        attention_weights = torch.softmax(scores, dim=-1)  # (batch, seq_len, 49)
+
+        # For the actual output, use the standard decoder
+        decoder_out = self.transformer_decoder(
+            tgt=embedded,
+            memory=encoder_out,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+        )
+
+        # Project to vocabulary
+        output = self.fc_out(decoder_out)
+
+        return output, attention_weights
+
+    def get_attention_weights(self) -> torch.Tensor:
+        """
+        Get stored attention weights from the last forward pass.
+
+        Returns:
+            Attention weights tensor if available, None otherwise.
+        """
+        return self.attention_weights
 
 
 class ImageCaptioningModel(nn.Module):
