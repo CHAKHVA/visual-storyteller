@@ -1,5 +1,7 @@
 """Model components for image captioning: CNN encoder and Transformer decoder."""
 
+import math
+
 import torch
 import torch.nn as nn
 from torchvision import models
@@ -101,6 +103,69 @@ class EncoderCNN(nn.Module):
                 param.requires_grad = False
 
 
+class PositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding for transformer."""
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        """
+        Initialize positional encoding with sinusoidal patterns.
+
+        Creates fixed positional encodings using sine and cosine functions
+        of different frequencies. These encodings are added to token embeddings
+        to provide position information to the transformer.
+
+        Args:
+            d_model: Dimension of the model embeddings.
+            dropout: Dropout probability to apply after adding positional encoding.
+            max_len: Maximum sequence length to support.
+        """
+        super(PositionalEncoding, self).__init__()
+
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Create positional encoding matrix: (max_len, d_model)
+        pe = torch.zeros(max_len, d_model)
+
+        # Create position indices: (max_len, 1)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+
+        # Create division term for the sinusoidal formula
+        # div_term shape: (d_model // 2,)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+
+        # Apply sine to even indices
+        pe[:, 0::2] = torch.sin(position * div_term)
+
+        # Apply cosine to odd indices
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Add batch dimension: (1, max_len, d_model)
+        pe = pe.unsqueeze(0)
+
+        # Register as buffer (not a parameter, but saved with the model)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Add positional encoding to input embeddings.
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, d_model).
+
+        Returns:
+            Tensor with positional encoding added, shape (batch, seq_len, d_model).
+        """
+        # Add positional encoding (slice to match sequence length)
+        # self.pe shape: (1, max_len, d_model)
+        # x shape: (batch, seq_len, d_model)
+        x = x + self.pe[:, : x.size(1), :]
+
+        # Apply dropout
+        return self.dropout(x)
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("Testing EncoderCNN")
@@ -176,6 +241,57 @@ if __name__ == "__main__":
     )
 
     print("\n✓ fine_tune() method works correctly!")
+
+    # Test PositionalEncoding
+    print("\n" + "=" * 70)
+    print("Testing PositionalEncoding")
+    print("=" * 70)
+
+    # Create positional encoding with d_model=512
+    d_model = 512
+    pos_encoding = PositionalEncoding(d_model=d_model, dropout=0.1, max_len=100)
+
+    print(f"\nPositionalEncoding created with d_model={d_model}")
+    print(f"Max length: 100")
+    print(f"Positional encoding buffer shape: {pos_encoding.pe.shape}")
+
+    # Create dummy input: (batch=2, seq_len=10, d_model=512)
+    batch_size = 2
+    seq_len = 10
+    dummy_embeddings = torch.randn(batch_size, seq_len, d_model)
+
+    print(f"\nInput shape: {dummy_embeddings.shape}")
+
+    # Forward pass (no dropout for testing)
+    pos_encoding.eval()  # Set to eval mode to disable dropout
+    with torch.no_grad():
+        output = pos_encoding(dummy_embeddings)
+
+    print(f"Output shape: {output.shape}")
+    print(f"Expected shape: ({batch_size}, {seq_len}, {d_model})")
+
+    # Verify output shape matches input shape
+    assert output.shape == dummy_embeddings.shape, (
+        f"Shape mismatch! Expected {dummy_embeddings.shape}, got {output.shape}"
+    )
+    print("\n✓ Output shape matches input shape!")
+
+    # Verify that values are different (encoding was added)
+    # In eval mode with no dropout, the difference should be exactly the positional encoding
+    difference = (output - dummy_embeddings).abs().sum()
+    print(f"\nSum of absolute differences: {difference.item():.2f}")
+    assert difference > 0, "Positional encoding was not added!"
+    print("✓ Positional encoding was successfully added!")
+
+    # Test with different sequence lengths
+    for test_seq_len in [5, 20, 50]:
+        test_input = torch.randn(1, test_seq_len, d_model)
+        with torch.no_grad():
+            test_output = pos_encoding(test_input)
+        assert test_output.shape == test_input.shape, (
+            f"Failed for seq_len={test_seq_len}"
+        )
+    print("✓ Works correctly with different sequence lengths!")
 
     print("\n" + "=" * 70)
     print("All tests passed!")
