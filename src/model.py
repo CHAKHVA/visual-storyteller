@@ -296,6 +296,106 @@ class DecoderTransformer(nn.Module):
         return mask
 
 
+class ImageCaptioningModel(nn.Module):
+    """Complete image captioning model combining encoder and decoder."""
+
+    def __init__(
+        self,
+        embed_size: int,
+        vocab_size: int,
+        num_heads: int,
+        num_layers: int,
+        dropout: float = 0.1,
+        backbone: str = "resnet101",
+    ):
+        """
+        Initialize the complete image captioning model.
+
+        Args:
+            embed_size: Dimension of embeddings.
+            vocab_size: Size of the vocabulary.
+            num_heads: Number of attention heads in transformer.
+            num_layers: Number of transformer decoder layers.
+            dropout: Dropout probability.
+            backbone: CNN encoder backbone (default: resnet101).
+        """
+        super(ImageCaptioningModel, self).__init__()
+
+        self.embed_size = embed_size
+
+        # CNN encoder for image features
+        self.encoder = EncoderCNN(embed_size=embed_size, backbone=backbone)
+
+        # Transformer decoder for caption generation
+        self.decoder = DecoderTransformer(
+            embed_size=embed_size,
+            vocab_size=vocab_size,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+
+    def forward(self, images: torch.Tensor, captions: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through encoder and decoder.
+
+        During training, captions include <SOS> at start and <EOS> at end.
+        We pass captions[:, :-1] to the decoder (excluding last token) and
+        predict the next token at each position (teacher forcing).
+
+        Args:
+            images: Input images of shape (batch, 3, 224, 224).
+            captions: Caption tokens of shape (batch, seq_len).
+                Includes <SOS>, target words, and <EOS>.
+
+        Returns:
+            Logits over vocabulary of shape (batch, seq_len-1, vocab_size).
+            Each position predicts the next token.
+        """
+        # Extract image features: (batch, 49, embed_size)
+        encoder_out = self.encoder(images)
+
+        # Generate captions using teacher forcing
+        # Input: all tokens except last (e.g., <SOS>, w1, w2, ..., w_n)
+        # Target: all tokens except first (e.g., w1, w2, ..., w_n, <EOS>)
+        # Shape: (batch, seq_len-1, vocab_size)
+        outputs = self.decoder(encoder_out, captions[:, :-1])
+
+        return outputs
+
+    def fine_tune_encoder(self, enable: bool = True) -> None:
+        """
+        Enable or disable fine-tuning of the encoder.
+
+        Args:
+            enable: If True, unfreeze encoder's layer4. If False, freeze all.
+        """
+        self.encoder.fine_tune(enable=enable)
+
+    @staticmethod
+    def create_from_config(config: dict, vocab_size: int) -> "ImageCaptioningModel":
+        """
+        Factory method to create model from configuration dictionary.
+
+        Args:
+            config: Configuration dictionary with 'model' section.
+            vocab_size: Size of the vocabulary.
+
+        Returns:
+            Initialized ImageCaptioningModel instance.
+        """
+        model_config = config["model"]
+
+        return ImageCaptioningModel(
+            embed_size=model_config["embed_size"],
+            vocab_size=vocab_size,
+            num_heads=model_config["num_heads"],
+            num_layers=model_config["num_layers"],
+            dropout=model_config["dropout"],
+            backbone=model_config["encoder_backbone"],
+        )
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("Testing EncoderCNN")
@@ -515,6 +615,134 @@ if __name__ == "__main__":
     print(f"  Output shape: {output_with_padding.shape}")
     assert output_with_padding.shape == (2, 7, vocab_size)
     print("✓ Works correctly with padding!")
+
+    # Test ImageCaptioningModel
+    print("\n" + "=" * 70)
+    print("Testing ImageCaptioningModel")
+    print("=" * 70)
+
+    # Create complete model
+    vocab_size = 5000
+    embed_size = 512
+    num_heads = 8
+    num_layers = 6
+    dropout = 0.1
+
+    model = ImageCaptioningModel(
+        embed_size=embed_size,
+        vocab_size=vocab_size,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        dropout=dropout,
+        backbone="resnet101",
+    )
+
+    print(f"\nImageCaptioningModel created:")
+    print(f"  Embed size: {embed_size}")
+    print(f"  Vocab size: {vocab_size}")
+    print(f"  Num heads: {num_heads}")
+    print(f"  Num layers: {num_layers}")
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+
+    print(f"\nParameter count:")
+    print(f"  Total: {total_params:,}")
+    print(f"  Trainable: {trainable_params:,}")
+    print(f"  Frozen (encoder): {frozen_params:,}")
+
+    # Create dummy inputs
+    batch_size = 2
+    seq_len = 20
+
+    # Images: (batch, 3, 224, 224)
+    dummy_images = torch.randn(batch_size, 3, 224, 224)
+
+    # Captions: (batch, seq_len) with <SOS>=1, words, <EOS>=2
+    # Example: [<SOS>, w1, w2, ..., w17, <EOS>]
+    dummy_captions = torch.randint(1, vocab_size, (batch_size, seq_len))
+    dummy_captions[:, 0] = 1  # <SOS>
+    dummy_captions[:, -1] = 2  # <EOS>
+
+    print(f"\nInput shapes:")
+    print(f"  Images: {dummy_images.shape}")
+    print(f"  Captions: {dummy_captions.shape}")
+
+    # Forward pass
+    model.eval()
+    with torch.no_grad():
+        outputs = model(dummy_images, dummy_captions)
+
+    print(f"\nOutput shape: {outputs.shape}")
+    print(f"Expected shape: ({batch_size}, {seq_len - 1}, {vocab_size})")
+
+    # Verify output shape
+    expected_shape = (batch_size, seq_len - 1, vocab_size)
+    assert outputs.shape == expected_shape, (
+        f"Shape mismatch! Expected {expected_shape}, got {outputs.shape}"
+    )
+    print("\n✓ Output shape is correct!")
+
+    # Test fine_tune_encoder
+    print("\nTesting fine_tune_encoder method:")
+
+    # Initially encoder should be frozen
+    trainable_before = sum(
+        p.numel() for p in model.encoder.backbone.parameters() if p.requires_grad
+    )
+    print(f"  Before fine_tune: {trainable_before:,} trainable encoder params")
+
+    # Enable fine-tuning
+    model.fine_tune_encoder(enable=True)
+    trainable_after = sum(
+        p.numel() for p in model.encoder.backbone.parameters() if p.requires_grad
+    )
+    print(f"  After fine_tune(True): {trainable_after:,} trainable encoder params")
+
+    # Disable fine-tuning
+    model.fine_tune_encoder(enable=False)
+    trainable_disabled = sum(
+        p.numel() for p in model.encoder.backbone.parameters() if p.requires_grad
+    )
+    print(f"  After fine_tune(False): {trainable_disabled:,} trainable encoder params")
+
+    assert trainable_before == 0, "Initially encoder should be frozen"
+    assert trainable_after > 0, "After enabling, encoder should be unfrozen"
+    assert trainable_disabled == 0, "After disabling, encoder should be frozen"
+    print("✓ fine_tune_encoder() works correctly!")
+
+    # Test create_from_config
+    print("\n" + "=" * 70)
+    print("Testing create_from_config factory method")
+    print("=" * 70)
+
+    # Create dummy config
+    dummy_config = {
+        "model": {
+            "embed_size": 512,
+            "num_heads": 8,
+            "num_layers": 6,
+            "dropout": 0.1,
+            "encoder_backbone": "resnet101",
+        }
+    }
+
+    model_from_config = ImageCaptioningModel.create_from_config(
+        dummy_config, vocab_size=5000
+    )
+
+    print(f"\nModel created from config:")
+    print(f"  Embed size: {model_from_config.embed_size}")
+    print(f"  Vocab size: {model_from_config.decoder.vocab_size}")
+
+    # Test that it works
+    with torch.no_grad():
+        config_outputs = model_from_config(dummy_images, dummy_captions)
+
+    assert config_outputs.shape == expected_shape
+    print("✓ create_from_config() works correctly!")
 
     print("\n" + "=" * 70)
     print("All tests passed!")
