@@ -1,0 +1,87 @@
+# Image Captioning Configuration
+# All hyperparameters for data loading, model architecture, training, and inference
+
+data:
+  # Path to directory containing training images
+  image_dir: "caption_data/images"
+
+  # Path to CSV file with columns: image,caption
+  # 5 captions per image in the dataset
+  captions_file: "caption_data/captions.txt"
+
+  # Batch size for training and validation
+  batch_size: 32
+
+  # Number of worker processes for data loading
+  num_workers: 4
+
+  # Minimum frequency threshold for vocabulary
+  # Words appearing less than this many times are mapped to <UNK>
+  freq_threshold: 5
+
+  # Maximum caption length (tokens)
+  # Captions longer than this are truncated
+  max_caption_length: 50
+
+  # Train/validation/test split ratios
+  train_split: 0.75
+  val_split: 0.125
+  test_split: 0.125
+
+model:
+  # Embedding dimension for both encoder and decoder
+  # Encoder output will be transformed to this dimension
+  embed_size: 512
+
+  # Number of attention heads in transformer decoder
+  num_heads: 8
+
+  # Number of transformer decoder layers
+  num_layers: 6
+
+  # Dropout probability applied throughout the model
+  dropout: 0.1
+
+  # Pretrained CNN encoder backbone for feature extraction
+  # ResNet-101 extracts spatial features into (batch, 49, 512)
+  encoder_backbone: "resnet101"
+
+training:
+  # Total number of training epochs
+  epochs: 30
+
+  # Learning rate for decoder and unfrozen encoder layers
+  learning_rate: 3e-4
+
+  # Factor to reduce learning rate for fine-tuning encoder
+  # Actual encoder LR = learning_rate * encoder_lr_factor
+  encoder_lr_factor: 0.1
+
+  # L2 regularization coefficient
+  weight_decay: 1e-5
+
+  # Gradient clipping threshold (max L2 norm)
+  # Prevents exploding gradients during backpropagation
+  grad_clip: 5.0
+
+  # Label smoothing value for CrossEntropyLoss
+  # Regularizes confidence of target distribution
+  label_smoothing: 0.1
+
+  # Epoch at which to unfreeze encoder for fine-tuning
+  # Encoder is frozen (frozen=True) for first N epochs
+  unfreeze_encoder_epoch: 5
+
+  # Early stopping patience (epochs without improvement)
+  # Training stops if validation loss doesn't improve for N epochs
+  early_stopping_patience: 5
+
+inference:
+  # Beam width for beam search decoding
+  # beam_width=1 is equivalent to greedy decoding
+  beam_width: 5
+
+  # Temperature for softmax during decoding
+  # Lower values make predictions more deterministic
+  # temperature=1.0 is standard
+  temperature: 1.0
