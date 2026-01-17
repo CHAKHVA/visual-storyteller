@@ -1,5 +1,6 @@
 """Training utilities for image captioning model."""
 
+import argparse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -7,6 +8,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from src.dataset import build_vocab_from_dataloader, get_dataloaders
+from src.model import ImageCaptioningModel
+from src.utils import get_device, load_config, parse_captions_file, set_seed
+from src.vocab import Vocabulary
 
 
 def train_step(
@@ -358,222 +364,198 @@ def load_checkpoint(
     return checkpoint
 
 
+def train(config_path: str) -> str:
+    """
+    Main training orchestration function.
+
+    Args:
+        config_path: Path to configuration file.
+
+    Returns:
+        Path to the best model checkpoint.
+    """
+    print("=" * 80)
+    print("Image Captioning Training")
+    print("=" * 80)
+
+    # ========== Setup ==========
+    print("\n[1/5] Loading configuration and setting up environment...")
+    config = load_config(config_path)
+
+    # Set random seed for reproducibility
+    set_seed(42)
+
+    # Get device
+    device = get_device()
+    print(f"  Device: {device}")
+
+    # ========== Vocabulary ==========
+    print("\n[2/5] Setting up vocabulary...")
+    vocab_path = Path("checkpoints/vocab.pkl")
+
+    if vocab_path.exists():
+        print(f"  Loading existing vocabulary from {vocab_path}")
+        vocab = Vocabulary.load(str(vocab_path))
+    else:
+        print(f"  Building vocabulary from dataset...")
+        captions_df = parse_captions_file(config["data"]["captions_file"])
+        vocab = build_vocab_from_dataloader(
+            captions_df, config["data"]["freq_threshold"]
+        )
+        # Save vocabulary
+        vocab.save(str(vocab_path))
+        print(f"  Vocabulary saved to {vocab_path}")
+
+    print(f"  Vocabulary size: {len(vocab)}")
+
+    # ========== Data Loaders ==========
+    print("\n[3/5] Creating data loaders...")
+    train_loader, val_loader, test_loader = get_dataloaders(config, vocab)
+    print(f"  Train batches: {len(train_loader)}")
+    print(f"  Val batches: {len(val_loader)}")
+    print(f"  Test batches: {len(test_loader)}")
+
+    # ========== Model Setup ==========
+    print("\n[4/5] Setting up model...")
+    model = ImageCaptioningModel.create_from_config(config, vocab_size=len(vocab))
+    model = model.to(device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters: {trainable_params:,}")
+
+    # Loss function
+    criterion = get_criterion(
+        label_smoothing=config["training"]["label_smoothing"],
+        pad_idx=0,
+    )
+
+    # Optimizer (initially decoder only)
+    optimizer = get_optimizer(model, config, fine_tune=False)
+
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        patience=3,
+        factor=0.5,
+    )
+
+    print(f"  Optimizer: {type(optimizer).__name__}")
+    print(f"  Initial learning rate: {optimizer.param_groups[0]['lr']}")
+    print(f"  Scheduler: ReduceLROnPlateau (patience=3, factor=0.5)")
+
+    # ========== Training Loop ==========
+    print("\n[5/5] Starting training...")
+    print("=" * 80)
+
+    num_epochs = config["training"]["epochs"]
+    unfreeze_encoder_epoch = config["training"]["unfreeze_encoder_epoch"]
+    early_stopping_patience = config["training"]["early_stopping_patience"]
+    grad_clip = config["training"]["grad_clip"]
+
+    best_val_loss = float("inf")
+    patience_counter = 0
+    best_model_path = Path("checkpoints/best_model.pt")
+
+    for epoch in range(1, num_epochs + 1):
+        print(f"\nEpoch {epoch}/{num_epochs}")
+        print("-" * 80)
+
+        # Unfreeze encoder at specified epoch
+        if epoch == unfreeze_encoder_epoch:
+            print(f"\n  >>> Unfreezing encoder at epoch {epoch}")
+            model.fine_tune_encoder(enable=True)
+
+            # Recreate optimizer with differential learning rates
+            optimizer = get_optimizer(model, config, fine_tune=True)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                patience=3,
+                factor=0.5,
+            )
+            print(
+                f"  >>> Optimizer recreated with encoder LR: {optimizer.param_groups[0]['lr']:.2e}"
+            )
+            print(f"  >>> Decoder LR: {optimizer.param_groups[1]['lr']:.2e}")
+
+        # Train for one epoch
+        train_loss = train_epoch(
+            model, train_loader, criterion, optimizer, grad_clip, device
+        )
+
+        # Validate
+        val_loss = validate_epoch(model, val_loader, criterion, device)
+
+        # Step scheduler
+        scheduler.step(val_loss)
+
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]["lr"]
+        if len(optimizer.param_groups) > 1:
+            decoder_lr = optimizer.param_groups[1]["lr"]
+            lr_str = f"encoder={current_lr:.2e}, decoder={decoder_lr:.2e}"
+        else:
+            lr_str = f"{current_lr:.2e}"
+
+        # Print epoch summary
+        print(f"\n  Train Loss: {train_loss:.4f}")
+        print(f"  Val Loss:   {val_loss:.4f}")
+        print(f"  LR:         {lr_str}")
+
+        # Check for improvement
+        if val_loss < best_val_loss:
+            print(f"  ✓ Val loss improved ({best_val_loss:.4f} → {val_loss:.4f})")
+            best_val_loss = val_loss
+            patience_counter = 0
+
+            # Save best model
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                vocab=vocab,
+                config=config,
+                epoch=epoch,
+                loss=val_loss,
+                filepath_str=str(best_model_path),
+            )
+        else:
+            patience_counter += 1
+            print(
+                f"  ✗ No improvement (patience: {patience_counter}/{early_stopping_patience})"
+            )
+
+            # Early stopping
+            if patience_counter >= early_stopping_patience:
+                print(f"\n  Early stopping triggered after {epoch} epochs")
+                break
+
+    # ========== End ==========
+    print("\n" + "=" * 80)
+    print("Training complete!")
+    print(f"Best validation loss: {best_val_loss:.4f}")
+    print(f"Best model saved to: {best_model_path}")
+    print("=" * 80)
+
+    return str(best_model_path)
+
+
 if __name__ == "__main__":
-    print("=" * 70)
-    print("Testing Training Utilities")
-    print("=" * 70)
-
-    # Create dummy model (simplified)
-    class DummyModel(nn.Module):
-        def __init__(self, vocab_size=1000):
-            super().__init__()
-            self.encoder = nn.Linear(224 * 224 * 3, 512)
-            self.decoder = nn.Linear(512, vocab_size)
-            self.vocab_size = vocab_size
-
-        def forward(self, images, captions):
-            batch_size = images.shape[0]
-            seq_len = captions.shape[1] - 1  # Exclude last token
-
-            # Dummy forward pass
-            features = self.encoder(images.flatten(1))
-            outputs = self.decoder(features).unsqueeze(1).expand(-1, seq_len, -1)
-            return outputs
-
-    # Create dummy data
-    batch_size = 4
-    seq_len = 10
-    vocab_size = 1000
-
-    model = DummyModel(vocab_size=vocab_size)
-    images = torch.randn(batch_size, 3, 224, 224)
-
-    # Captions in collate_fn format: (seq_len, batch)
-    captions = torch.randint(1, vocab_size, (seq_len, batch_size))
-
-    print(f"\nDummy model created")
-    print(f"  Images shape: {images.shape}")
-    print(f"  Captions shape (collate_fn format): {captions.shape}")
-
-    # Test get_criterion
-    criterion = get_criterion(label_smoothing=0.1, pad_idx=0)
-    print(f"\nCriterion created: {type(criterion).__name__}")
-    print(f"  Label smoothing: 0.1")
-    print(f"  Ignore index: 0 (PAD)")
-
-    # Test get_optimizer
-    dummy_config = {
-        "training": {
-            "learning_rate": 3e-4,
-            "weight_decay": 1e-5,
-            "encoder_lr_factor": 0.1,
-        }
-    }
-
-    optimizer = get_optimizer(model, dummy_config, fine_tune=False)
-    print(f"\nOptimizer created (decoder only): {type(optimizer).__name__}")
-    print(f"  Learning rate: {optimizer.param_groups[0]['lr']}")
-    print(f"  Weight decay: {optimizer.param_groups[0]['weight_decay']}")
-
-    optimizer_ft = get_optimizer(model, dummy_config, fine_tune=True)
-    print(f"\nOptimizer created (fine-tune): {type(optimizer_ft).__name__}")
-    print(f"  Encoder LR: {optimizer_ft.param_groups[0]['lr']}")
-    print(f"  Decoder LR: {optimizer_ft.param_groups[1]['lr']}")
-
-    # Test train_step
-    print("\n" + "=" * 70)
-    print("Testing train_step")
-    print("=" * 70)
-
-    loss = train_step(model, images, captions, criterion, optimizer, grad_clip=5.0)
-    print(f"\nTrain step completed")
-    print(f"  Loss: {loss:.4f}")
-    print(f"  Loss type: {type(loss)}")
-    assert isinstance(loss, float), "Loss should be a float"
-    print("✓ train_step returns float loss!")
-
-    # Test validate_step
-    print("\n" + "=" * 70)
-    print("Testing validate_step")
-    print("=" * 70)
-
-    val_loss = validate_step(model, images, captions, criterion)
-    print(f"\nValidation step completed")
-    print(f"  Loss: {val_loss:.4f}")
-    print(f"  Loss type: {type(val_loss)}")
-    assert isinstance(val_loss, float), "Loss should be a float"
-    print("✓ validate_step returns float loss!")
-
-    # Verify gradient clipping works
-    print("\n" + "=" * 70)
-    print("Testing gradient clipping")
-    print("=" * 70)
-
-    # Run a step with very small clipping
-    optimizer.zero_grad()
-    loss = train_step(model, images, captions, criterion, optimizer, grad_clip=0.001)
-    print(f"Train step with grad_clip=0.001 completed")
-    print(f"  Loss: {loss:.4f}")
-    print("✓ Gradient clipping works!")
-
-    # Test train_epoch and validate_epoch
-    print("\n" + "=" * 70)
-    print("Testing train_epoch and validate_epoch")
-    print("=" * 70)
-
-    # Create a dummy dataloader
-    from torch.utils.data import TensorDataset
-
-    # Create multiple batches of data
-    num_samples = 16
-    dataset_images = torch.randn(num_samples, 3, 224, 224)
-    dataset_captions = torch.randint(1, vocab_size, (seq_len, num_samples))
-
-    # Create dataset with image, caption pairs
-    # Note: we need to transpose captions for the dataset
-    dataset = TensorDataset(
-        dataset_images,
-        dataset_captions.transpose(0, 1),  # Store as (batch, seq_len)
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Train image captioning model",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/config.yaml",
+        help="Path to configuration file",
     )
 
-    # Custom collate to match our format
-    def dummy_collate(batch):
-        images = torch.stack([item[0] for item in batch])
-        captions = torch.stack([item[1] for item in batch])
-        # Transpose to (seq_len, batch) to match collate_fn
-        captions = captions.transpose(0, 1)
-        image_names = [f"img_{i}.jpg" for i in range(len(batch))]
-        return images, captions, image_names
+    args = parser.parse_args()
 
-    dummy_loader = DataLoader(dataset, batch_size=batch_size, collate_fn=dummy_collate)
-
-    device = torch.device("cpu")
-
-    # Test train_epoch
-    avg_train_loss = train_epoch(
-        model, dummy_loader, criterion, optimizer, grad_clip=5.0, device=device
-    )
-    print(f"\nTrain epoch completed")
-    print(f"  Average loss: {avg_train_loss:.4f}")
-    assert isinstance(avg_train_loss, float), "Average loss should be float"
-    print("✓ train_epoch works!")
-
-    # Test validate_epoch
-    avg_val_loss = validate_epoch(model, dummy_loader, criterion, device=device)
-    print(f"\nValidation epoch completed")
-    print(f"  Average loss: {avg_val_loss:.4f}")
-    assert isinstance(avg_val_loss, float), "Average loss should be float"
-    print("✓ validate_epoch works!")
-
-    # Test save_checkpoint and load_checkpoint
-    print("\n" + "=" * 70)
-    print("Testing save_checkpoint and load_checkpoint")
-    print("=" * 70)
-
-    # Create a dummy vocabulary object
-    class DummyVocab:
-        def __init__(self):
-            self.stoi = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2}
-            self.itos = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>"}
-
-    dummy_vocab = DummyVocab()
-
-    # Save checkpoint
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        checkpoint_path = Path(tmpdir) / "test_checkpoint.pt"
-
-        save_checkpoint(
-            model=model,
-            optimizer=optimizer,
-            vocab=dummy_vocab,
-            config=dummy_config,
-            epoch=5,
-            loss=avg_train_loss,
-            filepath_str=str(checkpoint_path),
-        )
-
-        assert checkpoint_path.exists(), "Checkpoint file should exist"
-        print("✓ Checkpoint saved successfully!")
-
-        # Create a new model to load into
-        new_model = DummyModel(vocab_size=vocab_size)
-        new_optimizer = get_optimizer(new_model, dummy_config, fine_tune=False)
-
-        # Load checkpoint
-        loaded_checkpoint = load_checkpoint(
-            filepath_str=str(checkpoint_path),
-            model=new_model,
-            optimizer=new_optimizer,
-            device="cpu",
-        )
-
-        print(f"\nCheckpoint loaded successfully!")
-        print(f"  Loaded epoch: {loaded_checkpoint['epoch']}")
-        print(f"  Loaded loss: {loaded_checkpoint['loss']:.4f}")
-        print(f"  Vocab in checkpoint: {type(loaded_checkpoint['vocab']).__name__}")
-
-        # Verify the checkpoint contains expected keys
-        assert "model_state_dict" in loaded_checkpoint
-        assert "optimizer_state_dict" in loaded_checkpoint
-        assert "vocab" in loaded_checkpoint
-        assert "config" in loaded_checkpoint
-        assert loaded_checkpoint["epoch"] == 5
-        assert isinstance(loaded_checkpoint["vocab"], DummyVocab)
-
-        print("✓ Checkpoint loaded successfully with all components!")
-
-        # Test loading without optimizer
-        another_model = DummyModel(vocab_size=vocab_size)
-        loaded_checkpoint_no_opt = load_checkpoint(
-            filepath_str=str(checkpoint_path),
-            model=another_model,
-            optimizer=None,
-            device="cpu",
-        )
-        print("✓ Checkpoint loaded successfully without optimizer!")
-
-    print("\n" + "=" * 70)
-    print("All tests passed!")
-    print("=" * 70)
+    # Run training
+    best_model_path = train(args.config)
