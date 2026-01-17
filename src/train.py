@@ -341,7 +341,8 @@ def load_checkpoint(
         raise FileNotFoundError(f"Checkpoint not found: {filepath}")
 
     # Load checkpoint
-    checkpoint = torch.load(filepath, map_location=device)
+    # Note: weights_only=False is required to load custom objects like Vocabulary
+    checkpoint = torch.load(filepath, map_location=device, weights_only=False)
 
     # Load model state dict
     model.load_state_dict(checkpoint["model_state_dict"])
