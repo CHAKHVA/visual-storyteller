@@ -166,6 +166,136 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+class DecoderTransformer(nn.Module):
+    """Transformer decoder for caption generation."""
+
+    def __init__(
+        self,
+        embed_size: int,
+        vocab_size: int,
+        num_heads: int,
+        num_layers: int,
+        dropout: float = 0.1,
+    ):
+        """
+        Initialize the Transformer decoder.
+
+        Args:
+            embed_size: Dimension of embeddings and model.
+            vocab_size: Size of the vocabulary.
+            num_heads: Number of attention heads.
+            num_layers: Number of decoder layers.
+            dropout: Dropout probability.
+        """
+        super(DecoderTransformer, self).__init__()
+
+        self.embed_size = embed_size
+        self.vocab_size = vocab_size
+
+        # Word embedding layer
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+
+        # Positional encoding
+        self.pos_encoding = PositionalEncoding(
+            d_model=embed_size, dropout=dropout, max_len=5000
+        )
+
+        # Transformer decoder layer
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=embed_size,
+            nhead=num_heads,
+            dim_feedforward=embed_size * 4,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        # Stack multiple decoder layers
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers=num_layers
+        )
+
+        # Output projection to vocabulary
+        self.fc_out = nn.Linear(embed_size, vocab_size)
+
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize embedding and linear layer weights."""
+        nn.init.uniform_(self.embedding.weight, -0.1, 0.1)
+        nn.init.xavier_uniform_(self.fc_out.weight)
+        nn.init.constant_(self.fc_out.bias, 0)
+
+    def forward(
+        self, encoder_out: torch.Tensor, captions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass through the decoder.
+
+        Args:
+            encoder_out: Encoded image features of shape (batch, 49, embed_size).
+            captions: Caption token indices of shape (batch, seq_len).
+
+        Returns:
+            Logits over vocabulary of shape (batch, seq_len, vocab_size).
+        """
+        batch_size, seq_len = captions.shape
+
+        # Generate causal mask for autoregressive generation
+        # Shape: (seq_len, seq_len)
+        tgt_mask = self.generate_square_subsequent_mask(seq_len).to(captions.device)
+
+        # Create padding mask where captions == 0 (PAD token)
+        # Shape: (batch, seq_len)
+        tgt_key_padding_mask = captions == 0
+
+        # Embed captions and scale by sqrt(d_model)
+        # Shape: (batch, seq_len, embed_size)
+        embedded = self.embedding(captions) * math.sqrt(self.embed_size)
+
+        # Add positional encoding
+        # Shape: (batch, seq_len, embed_size)
+        embedded = self.pos_encoding(embedded)
+
+        # Pass through transformer decoder
+        # tgt: (batch, seq_len, embed_size)
+        # memory: (batch, 49, embed_size)
+        # tgt_mask: (seq_len, seq_len)
+        # tgt_key_padding_mask: (batch, seq_len)
+        decoder_out = self.transformer_decoder(
+            tgt=embedded,
+            memory=encoder_out,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+        )
+
+        # Project to vocabulary size
+        # Shape: (batch, seq_len, vocab_size)
+        output = self.fc_out(decoder_out)
+
+        return output
+
+    def generate_square_subsequent_mask(self, sz: int) -> torch.Tensor:
+        """
+        Generate a square causal mask for autoregressive decoding.
+
+        Creates an upper triangular matrix filled with -inf to prevent
+        attending to future positions.
+
+        Args:
+            sz: Size of the square mask (sequence length).
+
+        Returns:
+            Mask tensor of shape (sz, sz).
+        """
+        # Create upper triangular matrix with -inf (above diagonal)
+        mask = torch.triu(torch.full((sz, sz), float("-inf")), diagonal=1)
+        return mask
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("Testing EncoderCNN")
@@ -292,6 +422,99 @@ if __name__ == "__main__":
             f"Failed for seq_len={test_seq_len}"
         )
     print("✓ Works correctly with different sequence lengths!")
+
+    # Test DecoderTransformer
+    print("\n" + "=" * 70)
+    print("Testing DecoderTransformer")
+    print("=" * 70)
+
+    # Create decoder
+    vocab_size = 1000
+    embed_size = 512
+    num_heads = 8
+    num_layers = 6
+    dropout = 0.1
+
+    decoder = DecoderTransformer(
+        embed_size=embed_size,
+        vocab_size=vocab_size,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+
+    print(f"\nDecoderTransformer created:")
+    print(f"  Vocab size: {vocab_size}")
+    print(f"  Embed size: {embed_size}")
+    print(f"  Num heads: {num_heads}")
+    print(f"  Num layers: {num_layers}")
+
+    # Count parameters
+    total_params = sum(p.numel() for p in decoder.parameters())
+    print(f"\nTotal parameters: {total_params:,}")
+
+    # Create dummy inputs
+    batch_size = 4
+    seq_len = 15
+    spatial_features = 49
+
+    # Encoder output: (batch, 49, embed_size)
+    dummy_encoder_out = torch.randn(batch_size, spatial_features, embed_size)
+
+    # Captions: (batch, seq_len) - random token indices
+    dummy_captions = torch.randint(1, vocab_size, (batch_size, seq_len))
+
+    print(f"\nInput shapes:")
+    print(f"  Encoder output: {dummy_encoder_out.shape}")
+    print(f"  Captions: {dummy_captions.shape}")
+
+    # Forward pass
+    decoder.eval()  # Set to eval mode
+    with torch.no_grad():
+        output = decoder(dummy_encoder_out, dummy_captions)
+
+    print(f"\nOutput shape: {output.shape}")
+    print(f"Expected shape: ({batch_size}, {seq_len}, {vocab_size})")
+
+    # Verify output shape
+    expected_shape = (batch_size, seq_len, vocab_size)
+    assert output.shape == expected_shape, (
+        f"Shape mismatch! Expected {expected_shape}, got {output.shape}"
+    )
+    print("\n✓ Output shape is correct!")
+
+    # Test causal mask
+    print("\nTesting causal mask generation:")
+    mask = decoder.generate_square_subsequent_mask(5)
+    print(f"  Mask shape: {mask.shape}")
+    print(f"  Mask (should be upper triangular with -inf):")
+    print(f"  {mask}")
+
+    # Verify mask structure
+    assert mask.shape == (5, 5), "Mask shape incorrect"
+    assert mask[0, 0] == 0, "Diagonal should be 0"
+    assert mask[0, 1] == float("-inf"), "Upper triangle should be -inf"
+    print("✓ Causal mask is correct!")
+
+    # Test with padding (some tokens are 0)
+    dummy_captions_with_padding = torch.tensor(
+        [
+            [1, 45, 23, 67, 0, 0, 0],  # 4 real tokens, 3 padding
+            [1, 12, 34, 56, 78, 90, 2],  # All real tokens
+        ]
+    )
+    dummy_encoder_out_small = torch.randn(2, 49, embed_size)
+
+    with torch.no_grad():
+        output_with_padding = decoder(
+            dummy_encoder_out_small, dummy_captions_with_padding
+        )
+
+    print(f"\nWith padding:")
+    print(f"  Input captions shape: {dummy_captions_with_padding.shape}")
+    print(f"  Output shape: {output_with_padding.shape}")
+    assert output_with_padding.shape == (2, 7, vocab_size)
+    print("✓ Works correctly with padding!")
 
     print("\n" + "=" * 70)
     print("All tests passed!")
