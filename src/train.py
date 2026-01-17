@@ -166,12 +166,12 @@ def get_optimizer(
     Returns:
         AdamW optimizer configured for the training stage.
     """
-    lr = config["training"]["learning_rate"]
-    weight_decay = config["training"]["weight_decay"]
+    lr = float(config["training"]["learning_rate"])
+    weight_decay = float(config["training"]["weight_decay"])
 
     if fine_tune:
         # Use different learning rates for encoder and decoder
-        encoder_lr = lr * config["training"]["encoder_lr_factor"]
+        encoder_lr = lr * float(config["training"]["encoder_lr_factor"])
 
         optimizer = torch.optim.AdamW(
             [
