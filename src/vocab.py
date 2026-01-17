@@ -1,6 +1,8 @@
 """Vocabulary class for mapping between words and indices in captions."""
 
+import pickle
 from collections import Counter
+from pathlib import Path
 
 
 class Vocabulary:
@@ -115,8 +117,79 @@ class Vocabulary:
 
         return " ".join(words)
 
+    def save(self, filepath_str: str) -> None:
+        """
+        Save vocabulary to a pickle file.
+
+        Saves the vocabulary state including mappings and frequency threshold
+        so it can be reloaded later.
+
+        Args:
+            filepath: Path where the vocabulary should be saved.
+
+        Raises:
+            IOError: If there's an error writing to the file.
+        """
+        filepath = Path(filepath_str)
+
+        # Create parent directory if it doesn't exist
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        vocab_state = {
+            "itos": self.itos,
+            "stoi": self.stoi,
+            "freq_threshold": self.freq_threshold,
+        }
+
+        try:
+            with open(filepath, "wb") as f:
+                pickle.dump(vocab_state, f)
+            print(f"Vocabulary saved to {filepath}")
+        except Exception as e:
+            raise IOError(f"Failed to save vocabulary to {filepath}: {e}")
+
+    @classmethod
+    def load(cls, filepath_str: str) -> "Vocabulary":
+        """
+        Load vocabulary from a pickle file.
+
+        Creates a new Vocabulary instance and restores its state from
+        a previously saved file.
+
+        Args:
+            filepath: Path to the saved vocabulary file.
+
+        Returns:
+            Vocabulary instance with loaded state.
+
+        Raises:
+            FileNotFoundError: If the vocabulary file doesn't exist.
+            IOError: If there's an error reading the file.
+        """
+        filepath = Path(filepath_str)
+
+        if not filepath.exists():
+            raise FileNotFoundError(f"Vocabulary file not found: {filepath}")
+
+        try:
+            with open(filepath, "rb") as f:
+                vocab_state = pickle.load(f)
+
+            # Create new instance without initializing default values
+            vocab = cls.__new__(cls)
+            vocab.itos = vocab_state["itos"]
+            vocab.stoi = vocab_state["stoi"]
+            vocab.freq_threshold = vocab_state["freq_threshold"]
+
+            print(f"Vocabulary loaded from {filepath} ({len(vocab)} tokens)")
+            return vocab
+        except Exception as e:
+            raise IOError(f"Failed to load vocabulary from {filepath}: {e}")
+
 
 if __name__ == "__main__":
+    import tempfile
+
     # Sample captions for testing
     sample_captions = [
         "a dog playing in the park",
@@ -130,6 +203,9 @@ if __name__ == "__main__":
     ]
 
     # Create and build vocabulary
+    print("=" * 50)
+    print("Building vocabulary from sample captions")
+    print("=" * 50)
     vocab = Vocabulary(freq_threshold=2)
     vocab.build_vocabulary(sample_captions)
 
@@ -159,3 +235,47 @@ if __name__ == "__main__":
     print(f"\nWith special tokens: {test_with_special}")
     reconstructed_special = vocab.denumericalize(test_with_special)
     print(f"Denumericalized (special tokens skipped): '{reconstructed_special}'")
+
+    # Test save/load functionality
+    print("\n" + "=" * 50)
+    print("Testing save/load functionality")
+    print("=" * 50)
+
+    # Save vocabulary to temporary file
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".pkl", delete=False) as tmp:
+        temp_path = tmp.name
+
+    print(f"\nSaving vocabulary to temporary file: {temp_path}")
+    vocab.save(temp_path)
+
+    # Store original vocab size for comparison
+    original_size = len(vocab)
+    original_test_result = vocab.numericalize(test_caption)
+
+    # Load vocabulary from file
+    print(f"\nLoading vocabulary from file...")
+    loaded_vocab = Vocabulary.load(temp_path)
+
+    # Verify loaded vocabulary works correctly
+    print(f"\nVerifying loaded vocabulary:")
+    print(f"  Original vocab size: {original_size}")
+    print(f"  Loaded vocab size: {len(loaded_vocab)}")
+    print(f"  Sizes match: {original_size == len(loaded_vocab)}")
+
+    # Test that numericalization works the same
+    loaded_test_result = loaded_vocab.numericalize(test_caption)
+    print(f"\n  Original numericalization: {original_test_result}")
+    print(f"  Loaded numericalization: {loaded_test_result}")
+    print(f"  Results match: {original_test_result == loaded_test_result}")
+
+    # Test denumericalization
+    loaded_reconstructed = loaded_vocab.denumericalize(loaded_test_result)
+    print(f"\n  Loaded denumericalization: '{loaded_reconstructed}'")
+    print(f"  Matches original: {loaded_reconstructed == reconstructed}")
+
+    # Cleanup temporary file
+    Path(temp_path).unlink()
+    print(f"\nTemporary file cleaned up")
+    print("\n" + "=" * 50)
+    print("All tests passed!")
+    print("=" * 50)
