@@ -364,12 +364,13 @@ def load_checkpoint(
     return checkpoint
 
 
-def train(config_path: str) -> str:
+def train(config_path: str, resume_from_checkpoint: Optional[str] = None) -> str:
     """
     Main training orchestration function.
 
     Args:
         config_path: Path to configuration file.
+        resume_from_checkpoint: Optional path to checkpoint to resume from.
 
     Returns:
         Path to the best model checkpoint.
@@ -446,6 +447,25 @@ def train(config_path: str) -> str:
     print(f"  Initial learning rate: {optimizer.param_groups[0]['lr']}")
     print(f"  Scheduler: ReduceLROnPlateau (patience=3, factor=0.5)")
 
+    # ========== Resume from Checkpoint ==========
+    start_epoch = 1
+    best_val_loss = float("inf")
+    patience_counter = 0
+
+    if resume_from_checkpoint and Path(resume_from_checkpoint).exists():
+        print(f"\n  >>> Resuming from checkpoint: {resume_from_checkpoint}")
+        checkpoint = load_checkpoint(
+            resume_from_checkpoint, model, optimizer, str(device)
+        )
+        start_epoch = checkpoint["epoch"] + 1
+        best_val_loss = checkpoint["loss"]
+        patience_counter = 0  # Reset patience counter on resume
+        print(f"  >>> Resuming from epoch {checkpoint['epoch']}")
+        print(f"  >>> Best validation loss so far: {best_val_loss:.4f}")
+    elif resume_from_checkpoint:
+        print(f"\n  >>> Checkpoint not found: {resume_from_checkpoint}")
+        print(f"  >>> Starting training from scratch")
+
     # ========== Training Loop ==========
     print("\n[5/5] Starting training...")
     print("=" * 80)
@@ -455,82 +475,104 @@ def train(config_path: str) -> str:
     early_stopping_patience = config["training"]["early_stopping_patience"]
     grad_clip = config["training"]["grad_clip"]
 
-    best_val_loss = float("inf")
-    patience_counter = 0
     best_model_path = Path("checkpoints/best_model.pt")
 
-    for epoch in range(1, num_epochs + 1):
-        print(f"\nEpoch {epoch}/{num_epochs}")
-        print("-" * 80)
+    try:
+        for epoch in range(start_epoch, num_epochs + 1):
+            print(f"\nEpoch {epoch}/{num_epochs}")
+            print("-" * 80)
 
-        # Unfreeze encoder at specified epoch
-        if epoch == unfreeze_encoder_epoch:
-            print(f"\n  >>> Unfreezing encoder at epoch {epoch}")
-            model.fine_tune_encoder(enable=True)
+            # Unfreeze encoder at specified epoch
+            if epoch == unfreeze_encoder_epoch:
+                print(f"\n  >>> Unfreezing encoder at epoch {epoch}")
+                model.fine_tune_encoder(enable=True)
 
-            # Recreate optimizer with differential learning rates
-            optimizer = get_optimizer(model, config, fine_tune=True)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                patience=3,
-                factor=0.5,
+                # Recreate optimizer with differential learning rates
+                optimizer = get_optimizer(model, config, fine_tune=True)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode="min",
+                    patience=3,
+                    factor=0.5,
+                )
+                print(
+                    f"  >>> Optimizer recreated with encoder LR: {optimizer.param_groups[0]['lr']:.2e}"
+                )
+                print(f"  >>> Decoder LR: {optimizer.param_groups[1]['lr']:.2e}")
+
+            # Train for one epoch
+            train_loss = train_epoch(
+                model, train_loader, criterion, optimizer, grad_clip, device
             )
-            print(
-                f"  >>> Optimizer recreated with encoder LR: {optimizer.param_groups[0]['lr']:.2e}"
-            )
-            print(f"  >>> Decoder LR: {optimizer.param_groups[1]['lr']:.2e}")
 
-        # Train for one epoch
-        train_loss = train_epoch(
-            model, train_loader, criterion, optimizer, grad_clip, device
+            # Validate
+            val_loss = validate_epoch(model, val_loader, criterion, device)
+
+            # Step scheduler
+            scheduler.step(val_loss)
+
+            # Get current learning rate
+            current_lr = optimizer.param_groups[0]["lr"]
+            if len(optimizer.param_groups) > 1:
+                decoder_lr = optimizer.param_groups[1]["lr"]
+                lr_str = f"encoder={current_lr:.2e}, decoder={decoder_lr:.2e}"
+            else:
+                lr_str = f"{current_lr:.2e}"
+
+            # Print epoch summary
+            print(f"\n  Train Loss: {train_loss:.4f}")
+            print(f"  Val Loss:   {val_loss:.4f}")
+            print(f"  LR:         {lr_str}")
+
+            # Check for improvement
+            if val_loss < best_val_loss:
+                print(f"  ✓ Val loss improved ({best_val_loss:.4f} → {val_loss:.4f})")
+                best_val_loss = val_loss
+                patience_counter = 0
+
+                # Save best model
+                save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    vocab=vocab,
+                    config=config,
+                    epoch=epoch,
+                    loss=val_loss,
+                    filepath_str=str(best_model_path),
+                )
+            else:
+                patience_counter += 1
+                print(
+                    f"  ✗ No improvement (patience: {patience_counter}/{early_stopping_patience})"
+                )
+
+                # Early stopping
+                if patience_counter >= early_stopping_patience:
+                    print(f"\n  Early stopping triggered after {epoch} epochs")
+                    break
+
+    except KeyboardInterrupt:
+        print("\n" + "=" * 80)
+        print("Training interrupted by user!")
+        print("=" * 80)
+        emergency_path = Path("checkpoints/emergency_checkpoint.pt")
+        save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            vocab=vocab,
+            config=config,
+            epoch=epoch,
+            loss=val_loss if "val_loss" in locals() else float("inf"),
+            filepath_str=str(emergency_path),
         )
+        print(f"Emergency checkpoint saved to {emergency_path}")
+        return str(emergency_path)
 
-        # Validate
-        val_loss = validate_epoch(model, val_loader, criterion, device)
-
-        # Step scheduler
-        scheduler.step(val_loss)
-
-        # Get current learning rate
-        current_lr = optimizer.param_groups[0]["lr"]
-        if len(optimizer.param_groups) > 1:
-            decoder_lr = optimizer.param_groups[1]["lr"]
-            lr_str = f"encoder={current_lr:.2e}, decoder={decoder_lr:.2e}"
-        else:
-            lr_str = f"{current_lr:.2e}"
-
-        # Print epoch summary
-        print(f"\n  Train Loss: {train_loss:.4f}")
-        print(f"  Val Loss:   {val_loss:.4f}")
-        print(f"  LR:         {lr_str}")
-
-        # Check for improvement
-        if val_loss < best_val_loss:
-            print(f"  ✓ Val loss improved ({best_val_loss:.4f} → {val_loss:.4f})")
-            best_val_loss = val_loss
-            patience_counter = 0
-
-            # Save best model
-            save_checkpoint(
-                model=model,
-                optimizer=optimizer,
-                vocab=vocab,
-                config=config,
-                epoch=epoch,
-                loss=val_loss,
-                filepath_str=str(best_model_path),
-            )
-        else:
-            patience_counter += 1
-            print(
-                f"  ✗ No improvement (patience: {patience_counter}/{early_stopping_patience})"
-            )
-
-            # Early stopping
-            if patience_counter >= early_stopping_patience:
-                print(f"\n  Early stopping triggered after {epoch} epochs")
-                break
+    except Exception as e:
+        print(f"\n" + "=" * 80)
+        print(f"Training failed with error: {e}")
+        print("=" * 80)
+        raise
 
     # ========== End ==========
     print("\n" + "=" * 80)
@@ -554,8 +596,14 @@ if __name__ == "__main__":
         default="configs/config.yaml",
         help="Path to configuration file",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from",
+    )
 
     args = parser.parse_args()
 
     # Run training
-    best_model_path = train(args.config)
+    best_model_path = train(args.config, resume_from_checkpoint=args.resume)
