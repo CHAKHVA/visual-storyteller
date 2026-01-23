@@ -431,6 +431,3 @@ if __name__ == "__main__":
         print("The code structure is correct and ready for actual data.")
     except Exception as e:
         print(f"\nError during testing: {e}")
-        import traceback
-
-        traceback.print_exc()
