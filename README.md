@@ -25,7 +25,7 @@ The model is trained on the Flickr8k dataset and achieves competitive BLEU score
 
 ### Requirements
 
-- Python 3.13+
+- Python 3.10+
 - CUDA-compatible GPU (recommended)
 
 ### Setup

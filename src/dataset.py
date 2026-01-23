@@ -297,7 +297,7 @@ def get_dataloaders(
         drop_last=False,
     )
 
-    print(f"\nDataset splits:")
+    print("\nDataset splits:")
     print(f"  Train: {len(train_dataset)} images ({len(train_df)} captions)")
     print(f"  Val:   {len(val_dataset)} images ({len(val_df)} captions)")
     print(f"  Test:  {len(test_dataset)} images ({len(test_df)} captions)")
@@ -338,7 +338,7 @@ if __name__ == "__main__":
 
     images, captions, image_names = collate_fn(dummy_batch)
 
-    print(f"After collate_fn:")
+    print("After collate_fn:")
     print(f"  Images shape: {images.shape} (expected: [3, 3, 224, 224])")
     print(f"  Captions shape: {captions.shape} (expected: [9, 3] - max_len x batch)")
     print(
@@ -353,7 +353,7 @@ if __name__ == "__main__":
     try:
         # Load configuration
         config = load_config("configs/config.yaml")
-        print(f"\nConfiguration loaded successfully")
+        print("\nConfiguration loaded successfully")
         print(f"  Batch size: {config['data']['batch_size']}")
         print(f"  Freq threshold: {config['data']['freq_threshold']}")
         print(
@@ -362,7 +362,7 @@ if __name__ == "__main__":
 
         # Load captions
         captions_df = parse_captions_file(config["data"]["captions_file"])
-        print(f"\nCaptions loaded:")
+        print("\nCaptions loaded:")
         print(f"  Total captions: {len(captions_df)}")
         print(f"  Unique images: {captions_df['image'].nunique()}")
 
@@ -376,16 +376,16 @@ if __name__ == "__main__":
         print(f"Vocabulary size: {len(vocab)}")
 
         # Create dataloaders
-        print(f"\nCreating dataloaders...")
+        print("\nCreating dataloaders...")
         train_loader, val_loader, test_loader = get_dataloaders(config, vocab)
 
-        print(f"\nDataLoader info:")
+        print("\nDataLoader info:")
         print(f"  Train batches: {len(train_loader)}")
         print(f"  Val batches: {len(val_loader)}")
         print(f"  Test batches: {len(test_loader)}")
 
         # Test getting one batch from train loader
-        print(f"\n" + "=" * 70)
+        print("\n" + "=" * 70)
         print("Part 3: Testing batch retrieval")
         print("=" * 70)
 
@@ -393,7 +393,7 @@ if __name__ == "__main__":
             train_iter = iter(train_loader)
             images, captions, image_names = next(train_iter)
 
-            print(f"\nFirst training batch:")
+            print("\nFirst training batch:")
             print(f"  Images shape: {images.shape} (B, C, H, W)")
             print(f"  Captions shape: {captions.shape} (max_len, B)")
             print(f"  Batch size: {images.shape[0]}")
@@ -402,7 +402,7 @@ if __name__ == "__main__":
             print(f"  First image name: {image_names[0]}")
 
             # Verify image normalization
-            print(f"\nImage statistics (should be normalized):")
+            print("\nImage statistics (should be normalized):")
             print(f"  Mean: {images.mean():.3f}")
             print(f"  Std: {images.std():.3f}")
             print(f"  Min: {images.min():.3f}")
@@ -410,7 +410,7 @@ if __name__ == "__main__":
 
             # Show a sample caption
             sample_caption = captions[:, 0]  # First caption
-            print(f"\nSample caption (first in batch):")
+            print("\nSample caption (first in batch):")
             print(f"  Indices: {sample_caption.tolist()}")
             print(f"  Text: {vocab.denumericalize(sample_caption.tolist())}")
 

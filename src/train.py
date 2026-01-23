@@ -398,7 +398,7 @@ def train(config_path: str, resume_from_checkpoint: Optional[str] = None) -> str
         print(f"  Loading existing vocabulary from {vocab_path}")
         vocab = Vocabulary.load(str(vocab_path))
     else:
-        print(f"  Building vocabulary from dataset...")
+        print("  Building vocabulary from dataset...")
         captions_df = parse_captions_file(config["data"]["captions_file"])
         vocab = build_vocab_from_dataloader(
             captions_df, config["data"]["freq_threshold"]
@@ -445,7 +445,7 @@ def train(config_path: str, resume_from_checkpoint: Optional[str] = None) -> str
 
     print(f"  Optimizer: {type(optimizer).__name__}")
     print(f"  Initial learning rate: {optimizer.param_groups[0]['lr']}")
-    print(f"  Scheduler: ReduceLROnPlateau (patience=3, factor=0.5)")
+    print("  Scheduler: ReduceLROnPlateau (patience=3, factor=0.5)")
 
     # ========== Resume from Checkpoint ==========
     start_epoch = 1
@@ -464,7 +464,7 @@ def train(config_path: str, resume_from_checkpoint: Optional[str] = None) -> str
         print(f"  >>> Best validation loss so far: {best_val_loss:.4f}")
     elif resume_from_checkpoint:
         print(f"\n  >>> Checkpoint not found: {resume_from_checkpoint}")
-        print(f"  >>> Starting training from scratch")
+        print("  >>> Starting training from scratch")
 
     # ========== Training Loop ==========
     print("\n[5/5] Starting training...")
@@ -569,7 +569,7 @@ def train(config_path: str, resume_from_checkpoint: Optional[str] = None) -> str
         return str(emergency_path)
 
     except Exception as e:
-        print(f"\n" + "=" * 80)
+        print("\n" + "=" * 80)
         print(f"Training failed with error: {e}")
         print("=" * 80)
         raise

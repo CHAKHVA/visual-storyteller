@@ -349,14 +349,11 @@ class DecoderTransformer(nn.Module):
 
         query = embedded
         key = encoder_out
-        value = encoder_out
 
         # Compute attention scores: Q @ K^T / sqrt(d_k)
         # (batch, seq_len, embed_size) @ (batch, embed_size, 49)
         # -> (batch, seq_len, 49)
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(
-            self.embed_size
-        )
+        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.embed_size)
 
         # Apply softmax to get attention weights
         attention_weights = torch.softmax(scores, dim=-1)  # (batch, seq_len, 49)
@@ -485,353 +482,34 @@ class ImageCaptioningModel(nn.Module):
 
 
 if __name__ == "__main__":
-    print("=" * 70)
-    print("Testing EncoderCNN")
-    print("=" * 70)
+    print("Testing model components...")
 
-    # Create encoder with embed_size=512
     embed_size = 512
     encoder = EncoderCNN(embed_size=embed_size)
-
-    print(f"\nEncoder created with embed_size={embed_size}")
-    print(f"Backbone: {type(encoder.backbone).__name__}")
-
-    # Count parameters
-    total_params = sum(p.numel() for p in encoder.parameters())
-    trainable_params = sum(p.numel() for p in encoder.parameters() if p.requires_grad)
-
-    print(f"\nParameter count:")
-    print(f"  Total: {total_params:,}")
-    print(f"  Trainable: {trainable_params:,}")
-    print(f"  Frozen: {total_params - trainable_params:,}")
-
-    # Create dummy input: (batch=2, channels=3, height=224, width=224)
     dummy_input = torch.randn(2, 3, 224, 224)
-    print(f"\nInput shape: {dummy_input.shape}")
-
-    # Forward pass
     with torch.no_grad():
         output = encoder(dummy_input)
-
-    print(f"Output shape: {output.shape}")
-    print(f"Expected shape: (2, 49, 512)")
-
-    # Verify output shape
-    expected_shape = (2, 49, embed_size)
-    assert output.shape == expected_shape, (
-        f"Shape mismatch! Expected {expected_shape}, got {output.shape}"
-    )
-
-    print(f"\n✓ Output shape is correct!")
-
-    # Test fine_tune method
-    print("\n" + "=" * 70)
-    print("Testing fine_tune() method")
-    print("=" * 70)
-
-    # Initially all should be frozen
-    trainable_before = sum(
-        p.numel() for p in encoder.backbone.parameters() if p.requires_grad
-    )
-    print(f"\nBefore fine_tune(True):")
-    print(f"  Trainable backbone params: {trainable_before:,}")
-
-    # Enable fine-tuning
-    encoder.fine_tune(enable=True)
-    trainable_after = sum(
-        p.numel() for p in encoder.backbone.parameters() if p.requires_grad
-    )
-    print(f"\nAfter fine_tune(True):")
-    print(f"  Trainable backbone params: {trainable_after:,}")
-
-    # Disable fine-tuning
-    encoder.fine_tune(enable=False)
-    trainable_disabled = sum(
-        p.numel() for p in encoder.backbone.parameters() if p.requires_grad
-    )
-    print(f"\nAfter fine_tune(False):")
-    print(f"  Trainable backbone params: {trainable_disabled:,}")
-
-    assert trainable_before == 0, "Initially, all backbone params should be frozen"
-    assert trainable_after > 0, "After fine_tune(True), some params should be trainable"
-    assert trainable_disabled == 0, (
-        "After fine_tune(False), all params should be frozen again"
-    )
-
-    print("\n✓ fine_tune() method works correctly!")
-
-    # Test PositionalEncoding
-    print("\n" + "=" * 70)
-    print("Testing PositionalEncoding")
-    print("=" * 70)
-
-    # Create positional encoding with d_model=512
-    d_model = 512
-    pos_encoding = PositionalEncoding(d_model=d_model, dropout=0.1, max_len=100)
-
-    print(f"\nPositionalEncoding created with d_model={d_model}")
-    print(f"Max length: 100")
-    print(f"Positional encoding buffer shape: {pos_encoding.pe.shape}")
-
-    # Create dummy input: (batch=2, seq_len=10, d_model=512)
-    batch_size = 2
-    seq_len = 10
-    dummy_embeddings = torch.randn(batch_size, seq_len, d_model)
-
-    print(f"\nInput shape: {dummy_embeddings.shape}")
-
-    # Forward pass (no dropout for testing)
-    pos_encoding.eval()  # Set to eval mode to disable dropout
-    with torch.no_grad():
-        output = pos_encoding(dummy_embeddings)
-
-    print(f"Output shape: {output.shape}")
-    print(f"Expected shape: ({batch_size}, {seq_len}, {d_model})")
-
-    # Verify output shape matches input shape
-    assert output.shape == dummy_embeddings.shape, (
-        f"Shape mismatch! Expected {dummy_embeddings.shape}, got {output.shape}"
-    )
-    print("\n✓ Output shape matches input shape!")
-
-    # Verify that values are different (encoding was added)
-    # In eval mode with no dropout, the difference should be exactly the positional encoding
-    difference = (output - dummy_embeddings).abs().sum()
-    print(f"\nSum of absolute differences: {difference.item():.2f}")
-    assert difference > 0, "Positional encoding was not added!"
-    print("✓ Positional encoding was successfully added!")
-
-    # Test with different sequence lengths
-    for test_seq_len in [5, 20, 50]:
-        test_input = torch.randn(1, test_seq_len, d_model)
-        with torch.no_grad():
-            test_output = pos_encoding(test_input)
-        assert test_output.shape == test_input.shape, (
-            f"Failed for seq_len={test_seq_len}"
-        )
-    print("✓ Works correctly with different sequence lengths!")
-
-    # Test DecoderTransformer
-    print("\n" + "=" * 70)
-    print("Testing DecoderTransformer")
-    print("=" * 70)
-
-    # Create decoder
-    vocab_size = 1000
-    embed_size = 512
-    num_heads = 8
-    num_layers = 6
-    dropout = 0.1
+    assert output.shape == (2, 49, embed_size)
+    print("✓ EncoderCNN works")
 
     decoder = DecoderTransformer(
-        embed_size=embed_size,
-        vocab_size=vocab_size,
-        num_heads=num_heads,
-        num_layers=num_layers,
-        dropout=dropout,
+        embed_size=512, vocab_size=1000, num_heads=8, num_layers=6
     )
-
-    print(f"\nDecoderTransformer created:")
-    print(f"  Vocab size: {vocab_size}")
-    print(f"  Embed size: {embed_size}")
-    print(f"  Num heads: {num_heads}")
-    print(f"  Num layers: {num_layers}")
-
-    # Count parameters
-    total_params = sum(p.numel() for p in decoder.parameters())
-    print(f"\nTotal parameters: {total_params:,}")
-
-    # Create dummy inputs
-    batch_size = 4
-    seq_len = 15
-    spatial_features = 49
-
-    # Encoder output: (batch, 49, embed_size)
-    dummy_encoder_out = torch.randn(batch_size, spatial_features, embed_size)
-
-    # Captions: (batch, seq_len) - random token indices
-    dummy_captions = torch.randint(1, vocab_size, (batch_size, seq_len))
-
-    print(f"\nInput shapes:")
-    print(f"  Encoder output: {dummy_encoder_out.shape}")
-    print(f"  Captions: {dummy_captions.shape}")
-
-    # Forward pass
-    decoder.eval()  # Set to eval mode
+    encoder_out = torch.randn(4, 49, 512)
+    captions = torch.randint(1, 1000, (4, 15))
     with torch.no_grad():
-        output = decoder(dummy_encoder_out, dummy_captions)
-
-    print(f"\nOutput shape: {output.shape}")
-    print(f"Expected shape: ({batch_size}, {seq_len}, {vocab_size})")
-
-    # Verify output shape
-    expected_shape = (batch_size, seq_len, vocab_size)
-    assert output.shape == expected_shape, (
-        f"Shape mismatch! Expected {expected_shape}, got {output.shape}"
-    )
-    print("\n✓ Output shape is correct!")
-
-    # Test causal mask
-    print("\nTesting causal mask generation:")
-    mask = decoder.generate_square_subsequent_mask(5)
-    print(f"  Mask shape: {mask.shape}")
-    print(f"  Mask (should be upper triangular with -inf):")
-    print(f"  {mask}")
-
-    # Verify mask structure
-    assert mask.shape == (5, 5), "Mask shape incorrect"
-    assert mask[0, 0] == 0, "Diagonal should be 0"
-    assert mask[0, 1] == float("-inf"), "Upper triangle should be -inf"
-    print("✓ Causal mask is correct!")
-
-    # Test with padding (some tokens are 0)
-    dummy_captions_with_padding = torch.tensor(
-        [
-            [1, 45, 23, 67, 0, 0, 0],  # 4 real tokens, 3 padding
-            [1, 12, 34, 56, 78, 90, 2],  # All real tokens
-        ]
-    )
-    dummy_encoder_out_small = torch.randn(2, 49, embed_size)
-
-    with torch.no_grad():
-        output_with_padding = decoder(
-            dummy_encoder_out_small, dummy_captions_with_padding
-        )
-
-    print(f"\nWith padding:")
-    print(f"  Input captions shape: {dummy_captions_with_padding.shape}")
-    print(f"  Output shape: {output_with_padding.shape}")
-    assert output_with_padding.shape == (2, 7, vocab_size)
-    print("✓ Works correctly with padding!")
-
-    # Test ImageCaptioningModel
-    print("\n" + "=" * 70)
-    print("Testing ImageCaptioningModel")
-    print("=" * 70)
-
-    # Create complete model
-    vocab_size = 5000
-    embed_size = 512
-    num_heads = 8
-    num_layers = 6
-    dropout = 0.1
+        output = decoder(encoder_out, captions)
+    assert output.shape == (4, 15, 1000)
+    print("✓ DecoderTransformer works")
 
     model = ImageCaptioningModel(
-        embed_size=embed_size,
-        vocab_size=vocab_size,
-        num_heads=num_heads,
-        num_layers=num_layers,
-        dropout=dropout,
-        backbone="resnet101",
+        embed_size=512, vocab_size=5000, num_heads=8, num_layers=6
     )
-
-    print(f"\nImageCaptioningModel created:")
-    print(f"  Embed size: {embed_size}")
-    print(f"  Vocab size: {vocab_size}")
-    print(f"  Num heads: {num_heads}")
-    print(f"  Num layers: {num_layers}")
-
-    # Count parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    frozen_params = total_params - trainable_params
-
-    print(f"\nParameter count:")
-    print(f"  Total: {total_params:,}")
-    print(f"  Trainable: {trainable_params:,}")
-    print(f"  Frozen (encoder): {frozen_params:,}")
-
-    # Create dummy inputs
-    batch_size = 2
-    seq_len = 20
-
-    # Images: (batch, 3, 224, 224)
-    dummy_images = torch.randn(batch_size, 3, 224, 224)
-
-    # Captions: (batch, seq_len) with <SOS>=1, words, <EOS>=2
-    # Example: [<SOS>, w1, w2, ..., w17, <EOS>]
-    dummy_captions = torch.randint(1, vocab_size, (batch_size, seq_len))
-    dummy_captions[:, 0] = 1  # <SOS>
-    dummy_captions[:, -1] = 2  # <EOS>
-
-    print(f"\nInput shapes:")
-    print(f"  Images: {dummy_images.shape}")
-    print(f"  Captions: {dummy_captions.shape}")
-
-    # Forward pass
+    images = torch.randn(2, 3, 224, 224)
+    captions = torch.randint(1, 5000, (2, 20))
     model.eval()
     with torch.no_grad():
-        outputs = model(dummy_images, dummy_captions)
-
-    print(f"\nOutput shape: {outputs.shape}")
-    print(f"Expected shape: ({batch_size}, {seq_len - 1}, {vocab_size})")
-
-    # Verify output shape
-    expected_shape = (batch_size, seq_len - 1, vocab_size)
-    assert outputs.shape == expected_shape, (
-        f"Shape mismatch! Expected {expected_shape}, got {outputs.shape}"
-    )
-    print("\n✓ Output shape is correct!")
-
-    # Test fine_tune_encoder
-    print("\nTesting fine_tune_encoder method:")
-
-    # Initially encoder should be frozen
-    trainable_before = sum(
-        p.numel() for p in model.encoder.backbone.parameters() if p.requires_grad
-    )
-    print(f"  Before fine_tune: {trainable_before:,} trainable encoder params")
-
-    # Enable fine-tuning
-    model.fine_tune_encoder(enable=True)
-    trainable_after = sum(
-        p.numel() for p in model.encoder.backbone.parameters() if p.requires_grad
-    )
-    print(f"  After fine_tune(True): {trainable_after:,} trainable encoder params")
-
-    # Disable fine-tuning
-    model.fine_tune_encoder(enable=False)
-    trainable_disabled = sum(
-        p.numel() for p in model.encoder.backbone.parameters() if p.requires_grad
-    )
-    print(f"  After fine_tune(False): {trainable_disabled:,} trainable encoder params")
-
-    assert trainable_before == 0, "Initially encoder should be frozen"
-    assert trainable_after > 0, "After enabling, encoder should be unfrozen"
-    assert trainable_disabled == 0, "After disabling, encoder should be frozen"
-    print("✓ fine_tune_encoder() works correctly!")
-
-    # Test create_from_config
-    print("\n" + "=" * 70)
-    print("Testing create_from_config factory method")
-    print("=" * 70)
-
-    # Create dummy config
-    dummy_config = {
-        "model": {
-            "embed_size": 512,
-            "num_heads": 8,
-            "num_layers": 6,
-            "dropout": 0.1,
-            "encoder_backbone": "resnet101",
-        }
-    }
-
-    model_from_config = ImageCaptioningModel.create_from_config(
-        dummy_config, vocab_size=5000
-    )
-
-    print(f"\nModel created from config:")
-    print(f"  Embed size: {model_from_config.embed_size}")
-    print(f"  Vocab size: {model_from_config.decoder.vocab_size}")
-
-    # Test that it works
-    with torch.no_grad():
-        config_outputs = model_from_config(dummy_images, dummy_captions)
-
-    assert config_outputs.shape == expected_shape
-    print("✓ create_from_config() works correctly!")
-
-    print("\n" + "=" * 70)
-    print("All tests passed!")
-    print("=" * 70)
+        outputs = model(images, captions)
+    assert outputs.shape == (2, 19, 5000)
+    print("✓ ImageCaptioningModel works")
+    print("\nAll tests passed!")

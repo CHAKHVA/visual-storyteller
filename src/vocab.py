@@ -253,11 +253,11 @@ if __name__ == "__main__":
     original_test_result = vocab.numericalize(test_caption)
 
     # Load vocabulary from file
-    print(f"\nLoading vocabulary from file...")
+    print("\nLoading vocabulary from file...")
     loaded_vocab = Vocabulary.load(temp_path)
 
     # Verify loaded vocabulary works correctly
-    print(f"\nVerifying loaded vocabulary:")
+    print("\nVerifying loaded vocabulary:")
     print(f"  Original vocab size: {original_size}")
     print(f"  Loaded vocab size: {len(loaded_vocab)}")
     print(f"  Sizes match: {original_size == len(loaded_vocab)}")
@@ -275,7 +275,7 @@ if __name__ == "__main__":
 
     # Cleanup temporary file
     Path(temp_path).unlink()
-    print(f"\nTemporary file cleaned up")
+    print("\nTemporary file cleaned up")
     print("\n" + "=" * 50)
     print("All tests passed!")
     print("=" * 50)
